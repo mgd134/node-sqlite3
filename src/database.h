@@ -17,7 +17,7 @@ using namespace node;
 namespace node_sqlite3 {
 
 class Database;
-
+//class Blob;
 
 class Database : public ObjectWrap {
 public:
@@ -63,6 +63,12 @@ public:
             Baton(db_, cb_), sql(sql_) {}
     };
 
+    struct OpenBlobBaton : Baton {
+        std::string msg;
+        OpenBlobBaton(Database* db_, Handle<Function> cb_, const char* msg_) :
+            Baton(db_, cb_), msg(msg_) {}
+    };
+
     struct LoadExtensionBaton : Baton {
         std::string filename;
         LoadExtensionBaton(Database* db_, Handle<Function> cb_, const char* filename_) :
@@ -99,6 +105,7 @@ public:
     typedef Async<UpdateInfo, Database> AsyncUpdate;
 
     friend class Statement;
+    friend class Blob;
 
 protected:
     Database() : ObjectWrap(),
@@ -133,6 +140,13 @@ protected:
     static void Work_BeginExec(Baton* baton);
     static void Work_Exec(uv_work_t* req);
     static void Work_AfterExec(uv_work_t* req);
+
+    // static NAN_METHOD(OpenBlob);
+    static void Work_BeginOpenBlob(Baton* baton);
+    static void Work_OpenBlob(uv_work_t* req);
+    static void Work_AfterOpenBlob(uv_work_t* req);
+
+    // static NAN_METHOD(CloseBlob);
 
     static NAN_METHOD(Wait);
     static void Work_Wait(Baton* baton);
@@ -171,6 +185,8 @@ protected:
 protected:
     sqlite3* _handle;
 
+    sqlite3_blob* blob;
+
     bool open;
     bool locked;
     unsigned int pending;
@@ -183,6 +199,26 @@ protected:
     AsyncProfile* debug_profile;
     AsyncUpdate* update_event;
 };
+
+class Blob : public ObjectWrap {
+public:
+    static Persistent<FunctionTemplate> blob_constructor_template;
+    static void Init(Handle<Object> target);
+
+    static NAN_METHOD(New);
+    static NAN_METHOD(Close);
+
+    Blob(Database* db_) : ObjectWrap(),
+        db(db_)
+    {
+        db->Ref();
+    }
+
+protected:
+    Database* db;
+    sqlite3_blob* blob;    
+};
+
 
 }
 

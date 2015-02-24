@@ -8,6 +8,8 @@
 using namespace node_sqlite3;
 
 Persistent<FunctionTemplate> Database::constructor_template;
+Persistent<FunctionTemplate> Blob::blob_constructor_template;
+
 
 void Database::Init(Handle<Object> target) {
     NanScope();
@@ -19,6 +21,8 @@ void Database::Init(Handle<Object> target) {
 
     NODE_SET_PROTOTYPE_METHOD(t, "close", Close);
     NODE_SET_PROTOTYPE_METHOD(t, "exec", Exec);
+    //NODE_SET_PROTOTYPE_METHOD(t, "openBlob", OpenBlob);
+    //NODE_SET_PROTOTYPE_METHOD(t, "closeBlob", CloseBlob);
     NODE_SET_PROTOTYPE_METHOD(t, "wait", Wait);
     NODE_SET_PROTOTYPE_METHOD(t, "loadExtension", LoadExtension);
     NODE_SET_PROTOTYPE_METHOD(t, "serialize", Serialize);
@@ -557,6 +561,153 @@ void Database::Work_AfterExec(uv_work_t* req) {
 
     delete baton;
 }
+
+/*********************************************************/
+void Blob::Init(Handle<Object> target) {
+    NanScope();
+
+    Local<FunctionTemplate> t = NanNew<FunctionTemplate>(New);
+
+    t->InstanceTemplate()->SetInternalFieldCount(1);
+    t->SetClassName(NanNew("Blob"));
+
+    NODE_SET_PROTOTYPE_METHOD(t, "close", Close);
+    NanAssignPersistent(blob_constructor_template, t);
+    target->Set(NanNew("Blob"),
+        t->GetFunction());
+}
+
+
+NAN_METHOD(Blob::New) {
+    NanScope();
+    if (!args.IsConstructCall()) {
+        return NanThrowTypeError("Use the new operator to create new Blob objects");
+    }
+
+    int length = args.Length();
+
+    if (length <= 0 || !Database::HasInstance(args[0])) {
+        return NanThrowTypeError("Database object expected");
+    }
+
+    REQUIRE_ARGUMENT_STRING(1, table);
+    REQUIRE_ARGUMENT_STRING(2, column);
+
+    Database* db = ObjectWrap::Unwrap<Database>(args[0]->ToObject());
+
+    Blob* blob = new Blob(db);
+
+    //stmt->Wrap(args.This());
+    
+    // if (args.Length() <= 3 || !args[3]->IsUint32()) {                        
+    //     return NanThrowTypeError("Argument 3 must be a rowid");          
+    // }                                                                          
+    // sqlite3_int64 rowid = args[3]->Uint32Value();
+
+    // if (args.Length() <= 4 || !args[4]->IsInt32()) {                        
+    //     return NanThrowTypeError("Argument 4 must be an integer");          
+    // }                                                                          
+    // int flags = args[4]->Int32Value();
+
+    // Baton* baton = new OpenBlobBaton(db, callback, *msg);
+    // db->Schedule(Work_BeginOpenBlob, baton, true);
+    // Going to insert a zeroblob of the size of the file
+    char insert_sql[1024];
+    snprintf(insert_sql, sizeof(insert_sql), "INSERT INTO %s (%s) VALUES (?)", *table, *column);
+
+    sqlite3_stmt *insert_stmt;
+    int rc = sqlite3_prepare_v2(db->_handle, insert_sql, -1, &insert_stmt, NULL);
+
+    if(SQLITE_OK != rc) {
+        char err[500];
+        sprintf(err, "%s, Can't prepare insert. Err = %i", insert_sql, rc);
+        return NanThrowError(err);
+    }
+
+    // Bind a block of zeros the size of the file we're going to insert later
+    sqlite3_bind_zeroblob(insert_stmt, 1, 100000);
+    if(SQLITE_DONE != (rc = sqlite3_step(insert_stmt))) {
+        return NanThrowError("Insert statement didn't work");
+    }
+    sqlite3_finalize(insert_stmt);
+    sqlite3_int64 rowid = sqlite3_last_insert_rowid(db->_handle);
+    //printf("Created a row, id %i, with a blank blob size %i\n", (int)rowid, (int)filesize);
+
+    rc = sqlite3_blob_open(db->_handle, "main", *table, *column, rowid, 1, &(blob->blob));
+    if(SQLITE_OK != rc) {
+        return NanThrowError("Couldn't get blob handle");
+    }
+
+    blob->Wrap(args.This());
+
+    NanReturnValue(args.This());
+}
+
+NAN_METHOD(Blob::Close) {
+    NanScope();
+    Blob* blob = ObjectWrap::Unwrap<Blob>(args.This());
+
+    sqlite3_blob_close(blob->db->blob);
+}
+
+void Database::Work_BeginOpenBlob(Baton* baton) {
+    assert(baton->db->open);
+    assert(baton->db->_handle);
+    assert(baton->db->pending == 0);
+    int status = uv_queue_work(uv_default_loop(),
+        &baton->request, Work_OpenBlob, (uv_after_work_cb)Work_AfterOpenBlob);
+    assert(status == 0);
+}
+
+void Database::Work_OpenBlob(uv_work_t* req) {
+    OpenBlobBaton* baton = static_cast<OpenBlobBaton*>(req->data);
+    // char* message = NULL;
+    // // baton->status = sqlite3_exec(
+    //     baton->db->_handle,
+    //     baton->sql.c_str(),
+    //     NULL,
+    //     NULL,
+    //     &message
+    // );
+
+    // if (baton->status != SQLITE_OK && message != NULL) {
+    //     baton->message = std::string(message);
+    //     sqlite3_free(message);
+    // }
+}
+
+void Database::Work_AfterOpenBlob(uv_work_t* req) {
+    NanScope();
+    OpenBlobBaton* baton = static_cast<OpenBlobBaton*>(req->data);
+    Database* db = baton->db;
+
+    // Local<Function> cb = NanNew(baton->callback);
+
+    // if (baton->status != SQLITE_OK) {
+    //     EXCEPTION(NanNew<String>(baton->message.c_str()), baton->status, exception);
+
+    //     if (!cb.IsEmpty() && cb->IsFunction()) {
+    //         Local<Value> argv[] = { exception };
+    //         TRY_CATCH_CALL(NanObjectWrapHandle(db), cb, 1, argv);
+    //     }
+    //     else {
+    //         Local<Value> args[] = { NanNew("error"), exception };
+    //         EMIT_EVENT(NanObjectWrapHandle(db), 2, args);
+    //     }
+    // }
+    // else if (!cb.IsEmpty() && cb->IsFunction()) {
+    //     Local<Value> argv[] = { NanNew(NanNull()) };
+    //     TRY_CATCH_CALL(NanObjectWrapHandle(db), cb, 1, argv);
+    // }
+
+    NanThrowError(baton->msg.c_str());
+    db->Process();
+    //NanReturnValue(13);
+
+    delete baton;
+}
+
+/*********************************************************/
 
 NAN_METHOD(Database::Wait) {
     NanScope();
