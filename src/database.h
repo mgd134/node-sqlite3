@@ -185,8 +185,6 @@ protected:
 protected:
     sqlite3* _handle;
 
-    sqlite3_blob* blob;
-
     bool open;
     bool locked;
     unsigned int pending;
@@ -206,7 +204,11 @@ public:
     static void Init(Handle<Object> target);
 
     static NAN_METHOD(New);
+    static NAN_METHOD(Create);
+    static NAN_METHOD(Open);
     static NAN_METHOD(Close);
+    static NAN_METHOD(Read);
+    static NAN_METHOD(Write);
 
     Blob(Database* db_) : ObjectWrap(),
         db(db_)
@@ -216,7 +218,8 @@ public:
 
 protected:
     Database* db;
-    sqlite3_blob* blob;    
+    sqlite3_blob* blob;   
+    sqlite3_uint64 blob_offset; 
 };
 
 

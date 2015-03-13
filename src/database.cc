@@ -571,7 +571,12 @@ void Blob::Init(Handle<Object> target) {
     t->InstanceTemplate()->SetInternalFieldCount(1);
     t->SetClassName(NanNew("Blob"));
 
+    NODE_SET_PROTOTYPE_METHOD(t, "create", Create);
+    NODE_SET_PROTOTYPE_METHOD(t, "open", Open);
     NODE_SET_PROTOTYPE_METHOD(t, "close", Close);
+    NODE_SET_PROTOTYPE_METHOD(t, "read", Read);
+    NODE_SET_PROTOTYPE_METHOD(t, "write", Write);
+
     NanAssignPersistent(blob_constructor_template, t);
     target->Set(NanNew("Blob"),
         t->GetFunction());
@@ -585,60 +590,102 @@ NAN_METHOD(Blob::New) {
     }
 
     int length = args.Length();
-
     if (length <= 0 || !Database::HasInstance(args[0])) {
         return NanThrowTypeError("Database object expected");
     }
 
-    REQUIRE_ARGUMENT_STRING(1, table);
-    REQUIRE_ARGUMENT_STRING(2, column);
-
     Database* db = ObjectWrap::Unwrap<Database>(args[0]->ToObject());
-
     Blob* blob = new Blob(db);
+    blob->Wrap(args.This());
+    NanReturnValue(args.This());
+}
 
-    //stmt->Wrap(args.This());
-    
-    // if (args.Length() <= 3 || !args[3]->IsUint32()) {                        
-    //     return NanThrowTypeError("Argument 3 must be a rowid");          
-    // }                                                                          
-    // sqlite3_int64 rowid = args[3]->Uint32Value();
+NAN_METHOD(Blob::Create) {
+    NanScope();
+    Blob* blob = ObjectWrap::Unwrap<Blob>(args.This());
 
-    // if (args.Length() <= 4 || !args[4]->IsInt32()) {                        
-    //     return NanThrowTypeError("Argument 4 must be an integer");          
-    // }                                                                          
-    // int flags = args[4]->Int32Value();
+    REQUIRE_ARGUMENT_STRING(0, table);
+    REQUIRE_ARGUMENT_STRING(1, column);
 
-    // Baton* baton = new OpenBlobBaton(db, callback, *msg);
-    // db->Schedule(Work_BeginOpenBlob, baton, true);
-    // Going to insert a zeroblob of the size of the file
-    char insert_sql[1024];
-    snprintf(insert_sql, sizeof(insert_sql), "INSERT INTO %s (%s) VALUES (?)", *table, *column);
+    sqlite3_int64 rowid;                                                                   
+    if (args.Length() < 3) {                                                
+        return NanThrowTypeError("Blob.create requires more parameters than were passed.");                                                      
+    }     
 
-    sqlite3_stmt *insert_stmt;
-    int rc = sqlite3_prepare_v2(db->_handle, insert_sql, -1, &insert_stmt, NULL);
+    if (args[2]->IsInt32()) {                                             
+        rowid = args[2]->Int32Value();                                           
+    }                                                                          
+    else {                                                                     
+        return NanThrowTypeError("rowid must be an integer");                                                                      
+    }
+
+    size_t filesize;                                                                   
+    if (args.Length() < 4) {                                                
+        return NanThrowTypeError("Blob.create requires more parameters than were passed.");                                                      
+    }     
+
+    if (args[3]->IsInt32()) {                                             
+        filesize = args[3]->Int32Value();                                           
+    }                                                                          
+    else {                                                                     
+        return NanThrowTypeError("filesize must be an integer");                                                                      
+    }
+
+
+    //Going to insert a zeroblob of the size of the file
+    char update_sql[1024];
+    snprintf(update_sql, sizeof(update_sql), "UPDATE %s SET %s = (?) WHERE rowid = %u", *table, *column, rowid);
+
+    sqlite3_stmt *update_stmt;
+    int rc = sqlite3_prepare_v2(blob->db->_handle, update_sql, -1, &update_stmt, NULL);
 
     if(SQLITE_OK != rc) {
         char err[500];
-        sprintf(err, "%s, Can't prepare insert. Err = %i", insert_sql, rc);
+        sprintf(err, "%s, Can't prepare update. Err = %i", update_sql, rc);
         return NanThrowError(err);
     }
 
     // Bind a block of zeros the size of the file we're going to insert later
-    sqlite3_bind_zeroblob(insert_stmt, 1, 100000);
-    if(SQLITE_DONE != (rc = sqlite3_step(insert_stmt))) {
-        return NanThrowError("Insert statement didn't work");
+    sqlite3_bind_zeroblob(update_stmt, 1, filesize);
+    if(SQLITE_DONE != (rc = sqlite3_step(update_stmt))) {
+        return NanThrowError("Update statement didn't work");
     }
-    sqlite3_finalize(insert_stmt);
-    sqlite3_int64 rowid = sqlite3_last_insert_rowid(db->_handle);
-    //printf("Created a row, id %i, with a blank blob size %i\n", (int)rowid, (int)filesize);
+    sqlite3_finalize(update_stmt);
 
-    rc = sqlite3_blob_open(db->_handle, "main", *table, *column, rowid, 1, &(blob->blob));
+    rc = sqlite3_blob_open(blob->db->_handle, "main", *table, *column, rowid, 1, &(blob->blob));
+    blob->blob_offset = 0;
+
     if(SQLITE_OK != rc) {
         return NanThrowError("Couldn't get blob handle");
     }
 
-    blob->Wrap(args.This());
+    NanReturnValue(args.This());
+}
+
+NAN_METHOD(Blob::Open) {
+    NanScope();
+    Blob* blob = ObjectWrap::Unwrap<Blob>(args.This());
+
+    REQUIRE_ARGUMENT_STRING(0, table);
+    REQUIRE_ARGUMENT_STRING(1, column);
+
+    sqlite3_int64 rowid;                                                                   
+    if (args.Length() < 3) {                                                
+        return NanThrowTypeError("Blob.open requires more parameters than were passed.");                                                      
+    }     
+
+    if (args[2]->IsInt32()) {                                             
+        rowid = args[2]->Int32Value();                                           
+    }                                                                          
+    else {                                                                     
+        return NanThrowTypeError("rowid must be an integer");                                                                      
+    }
+
+    int rc = sqlite3_blob_open(blob->db->_handle, "main", *table, *column, rowid, 1, &(blob->blob));
+    blob->blob_offset = 0;
+    if(SQLITE_OK != rc) {
+        return NanThrowError("Couldn't get blob handle");
+    }
 
     NanReturnValue(args.This());
 }
@@ -647,7 +694,75 @@ NAN_METHOD(Blob::Close) {
     NanScope();
     Blob* blob = ObjectWrap::Unwrap<Blob>(args.This());
 
-    sqlite3_blob_close(blob->db->blob);
+    sqlite3_blob_close(blob->blob);
+}
+
+NAN_METHOD(Blob::Read) {
+    NanScope();
+    Blob* blob = ObjectWrap::Unwrap<Blob>(args.This());
+
+    if (args.Length() < 1) {                                                
+        return NanThrowTypeError("Blob.read requires more parameters than were passed.");                                                      
+    }     
+
+    size_t bufsize;
+    if (args[0]->IsInt32()) {                                             
+        bufsize = args[0]->Int32Value();                                           
+    }                                                                          
+    else {                                                                     
+        return NanThrowTypeError("bufsize must be an integer");                                                                      
+    }
+
+    int blobsize = sqlite3_blob_bytes(blob->blob);
+    int bytes_left = blobsize - blob->blob_offset;
+
+    // char msg[500];
+    // sprintf(msg, "blobsize = %i, bytes_left = %i", blobsize, bytes_left);
+    // NanThrowError(msg);
+
+    if (bytes_left < bufsize) {
+        bufsize = bytes_left;
+    }
+    char buf[bufsize];
+
+    if (bufsize > 0) {
+        int rc = sqlite3_blob_read(blob->blob, buf, bufsize, blob->blob_offset);
+        if (SQLITE_OK != rc) {
+            NanThrowError("Error reading from blob.");
+        }
+    }
+
+    blob->blob_offset += bufsize;
+
+    Local<Object> buffer = NanNewBufferHandle(buf, bufsize);
+    NanReturnValue(buffer);
+}
+
+NAN_METHOD(Blob::Write) {
+    NanScope();
+    Blob* blob = ObjectWrap::Unwrap<Blob>(args.This());
+
+    char* buf;
+    size_t len;
+
+    if ((args.Length() > 0) && (Buffer::HasInstance(args[0]))) {
+        Local<Object> buffer = args[0]->ToObject();
+        buf = Buffer::Data(buffer);
+        len = Buffer::Length(buffer);
+    }
+    else {
+        return NanThrowError("Blob.write expects a buffer as the only argument.");
+    }
+
+    int rc = sqlite3_blob_write(blob->blob, buf, len, blob->blob_offset);
+    blob->blob_offset += len;
+    if (rc == SQLITE_OK) {
+        NanReturnValue(args.This());
+    }
+    else {
+        return NanThrowError("Problem writing to blob.");
+    }
+
 }
 
 void Database::Work_BeginOpenBlob(Baton* baton) {
